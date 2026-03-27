@@ -4,12 +4,17 @@
 test:
     cargo test
 
+# Check formatting + run unit tests
+check:
+    cargo fmt --check
+    cargo test
+
 # Run integration tests (LLM-based, requires pi + tmux)
 test-integration:
     ./tests/integration/run_all.sh
 
 # Run all tests
-test-all: test test-integration
+test-all: check test-integration
 
 # Build release binary
 build:
