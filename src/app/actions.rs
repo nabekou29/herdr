@@ -46,7 +46,7 @@ impl AppState {
         if self.workspaces.is_empty() {
             return;
         }
-        let name = self.workspaces[self.selected].name.clone();
+        let name = self.workspaces[self.selected].display_name();
         info!(workspace = %name, "workspace closed");
         self.workspaces.remove(self.selected);
         if self.workspaces.is_empty() {
@@ -236,16 +236,7 @@ impl AppState {
                 }
             }
         } else {
-            if ws.layout.focused() == pane_id {
-                ws.layout.close_focused();
-            } else {
-                let prev_focus = ws.layout.focused();
-                ws.layout.focus_pane(pane_id);
-                ws.layout.close_focused();
-                ws.layout.focus_pane(prev_focus);
-            }
-            ws.panes.remove(&pane_id);
-            ws.runtimes.remove(&pane_id);
+            ws.remove_pane(pane_id);
         }
     }
 }
@@ -311,7 +302,7 @@ mod tests {
         assert_eq!(state.workspaces.len(), 2);
         assert_eq!(state.selected, 1);
         assert_eq!(state.active, Some(1));
-        assert_eq!(state.workspaces[1].name, "c");
+        assert_eq!(state.workspaces[1].custom_name.as_deref(), Some("c"));
     }
 
     #[test]
@@ -346,7 +337,7 @@ mod tests {
         state.handle_pane_died(pane_id);
 
         assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.workspaces[0].name, "b");
+        assert_eq!(state.workspaces[0].custom_name.as_deref(), Some("b"));
     }
 
     #[test]

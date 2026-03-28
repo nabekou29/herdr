@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 use tui_term::widget::PseudoTerminal;
@@ -67,7 +67,7 @@ pub fn render(app: &AppState, frame: &mut Frame) {
             render_navigate_overlay(app, frame, terminal_area);
             render_context_menu(app, frame);
         }
-        Mode::CreateSession | Mode::RenameSession => {}
+        Mode::RenameSession => {}
         Mode::Terminal => {}
     }
 
@@ -129,39 +129,37 @@ fn compute_pane_infos(app: &AppState, area: Rect) -> Vec<PaneInfo> {
     pane_infos
 }
 
-/// Auto-scale sidebar width based on longest workspace name.
+/// Auto-scale sidebar width based on workspace identity + agent summary.
 fn compute_sidebar_width(app: &AppState) -> u16 {
     if app.workspaces.is_empty() {
-        return app.sidebar_width; // config default for empty state
+        return app.sidebar_width;
     }
-    let max_name = app
+    let max_line = app
         .workspaces
         .iter()
         .map(|ws| {
-            let pane_count = ws.layout.pane_count();
-            let bracket = if pane_count > 1 { 3 + pane_count } else { 0 }; // " [●●]"
-            ws.name.len() + bracket
+            let name_len = ws.display_name().len();
+            let pane_count = if ws.layout.pane_count() > 1 {
+                ws.layout.pane_count()
+            } else {
+                0
+            };
+            let line1 = 4 + name_len + pane_count; // marker + dot + spaces + pane dots
+            let line2 = ws.agent_summary().map(|s| s.len() + 2).unwrap_or(0);
+            line1.max(line2)
         })
         .max()
-        .unwrap_or(8);
-    // marker(2) + dot(2) + name + bracket + padding(2) + borders(2)
-    let needed = (max_name as u16) + 8;
-    needed.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)
+        .unwrap_or(12);
+    ((max_line as u16) + 2).clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)
 }
 
-/// Collapsed sidebar: borderless strip of state dots with selection highlight.
+/// Collapsed sidebar: pure glance mode.
 fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: Rect) {
     let is_navigating = matches!(
         app.mode,
-        Mode::Navigate
-            | Mode::CreateSession
-            | Mode::RenameSession
-            | Mode::Resize
-            | Mode::ConfirmClose
-            | Mode::ContextMenu
+        Mode::Navigate | Mode::RenameSession | Mode::Resize | Mode::ConfirmClose | Mode::ContextMenu
     );
 
-    // Thin vertical separator line on the right edge
     let sep_style = if is_navigating {
         Style::default().fg(app.accent)
     } else {
@@ -174,93 +172,60 @@ fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: Rect) {
         buf[(sep_x, y)].set_style(sep_style);
     }
 
-    let content_w = area.width.saturating_sub(1); // leave room for separator
+    let content_w = area.width.saturating_sub(1);
+    let bottom_y = area.y + area.height.saturating_sub(1);
 
     for (i, ws) in app.workspaces.iter().enumerate() {
-        if i as u16 >= area.height {
+        let y = area.y + i as u16;
+        if y >= bottom_y {
             break;
         }
         let (agg_state, agg_seen) = ws.aggregate_state();
         let (icon, icon_style) = state_icon_style(agg_state, agg_seen);
         let is_selected = i == app.selected && is_navigating;
-
-        let num_label = format!("{}", i + 1);
-
         let row_style = if is_selected {
             Style::default().bg(app.accent).fg(Color::Black)
         } else {
             Style::default()
         };
-        let dim_style = if is_selected {
+        let num_style = if is_selected {
             row_style
         } else {
             Style::default().fg(Color::DarkGray)
         };
 
-        let y = area.y + i as u16;
-        let row_area = Rect::new(area.x, y, content_w, 1);
-
-        // Fill background for selected row
         if is_selected {
             let buf = frame.buffer_mut();
-            for x in row_area.x..row_area.x + row_area.width {
+            for x in area.x..area.x + content_w {
                 buf[(x, y)].set_style(row_style);
             }
         }
 
-        let line = Line::from(vec![
-            Span::styled(&num_label, dim_style),
-            Span::styled(
-                " ",
-                if is_selected {
-                    row_style
-                } else {
-                    Style::default()
-                },
-            ),
-            Span::styled(
-                icon,
-                if is_selected {
-                    // Keep icon's fg color, just add the highlight bg
-                    icon_style.bg(app.accent)
-                } else {
-                    icon_style
-                },
-            ),
-        ]);
-        frame.render_widget(Paragraph::new(line), row_area);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(format!("{}", i + 1), num_style),
+                Span::styled(" ", row_style),
+                Span::styled(icon, if is_selected { icon_style.bg(app.accent) } else { icon_style }),
+            ])),
+            Rect::new(area.x, y, content_w, 1),
+        );
     }
 
-    // Toggle button at bottom
     render_sidebar_toggle(frame, area, true);
 }
 
 fn render_sidebar(app: &AppState, frame: &mut Frame, area: Rect) {
     let is_navigating = matches!(
         app.mode,
-        Mode::Navigate
-            | Mode::CreateSession
-            | Mode::RenameSession
-            | Mode::Resize
-            | Mode::ConfirmClose
-            | Mode::ContextMenu
+        Mode::Navigate | Mode::RenameSession | Mode::Resize | Mode::ConfirmClose | Mode::ContextMenu
     );
-
-    let highlight_style = if is_navigating {
-        Style::default()
-            .fg(Color::Black)
-            .bg(app.accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Black).bg(Color::DarkGray)
-    };
-
-    // Thin separator on right edge (consistent with collapsed)
+    let highlight = Style::default().bg(app.accent).fg(Color::Black);
     let sep_style = if is_navigating {
         Style::default().fg(app.accent)
     } else {
         Style::default().fg(Color::DarkGray)
     };
+
     let sep_x = area.x + area.width.saturating_sub(1);
     let buf = frame.buffer_mut();
     for y in area.y..area.y + area.height {
@@ -268,134 +233,89 @@ fn render_sidebar(app: &AppState, frame: &mut Frame, area: Rect) {
         buf[(sep_x, y)].set_style(sep_style);
     }
 
-    // Content area (left of separator)
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
+    let bottom_y = content.y + content.height.saturating_sub(1);
+    let new_row_y = bottom_y.saturating_sub(1);
+    let mut row_y = content.y;
 
-    // Title line
-    let title = match app.mode {
-        Mode::Terminal => format!(" {} ⏎", app.prefix_label),
-        Mode::Navigate | Mode::ContextMenu => " NAVIGATE".to_string(),
-        Mode::Resize => " RESIZE".to_string(),
-        Mode::CreateSession => " NEW".to_string(),
-        Mode::RenameSession => " RENAME".to_string(),
-        Mode::ConfirmClose => " CLOSE?".to_string(),
-    };
-    let title_style = if is_navigating {
-        Style::default().fg(app.accent).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    frame.render_widget(
-        Paragraph::new(Span::styled(&title, title_style)),
-        Rect::new(content.x, content.y, content.width, 1),
-    );
+    for (i, ws) in app.workspaces.iter().enumerate() {
+        if row_y + 1 >= new_row_y {
+            break;
+        }
+        let selected = i == app.selected && is_navigating;
+        let marker = if Some(i) == app.active { "▸" } else { " " };
+        let (agg_state, agg_seen) = ws.aggregate_state();
+        let (icon, icon_style) = state_icon_style(agg_state, agg_seen);
+        let text_style = if selected { highlight } else { Style::default() };
+        let dim_style = if selected {
+            highlight
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let mut line1 = vec![Span::styled(marker, text_style)];
 
-    // Workspace list (below title)
-    let list_area = Rect::new(
-        content.x,
-        content.y + 1,
-        content.width,
-        content.height.saturating_sub(1),
-    );
+        if ws.layout.pane_count() == 1 {
+            line1.push(Span::styled(
+                icon,
+                if selected { icon_style.bg(app.accent) } else { icon_style },
+            ));
+            line1.push(Span::styled(" ", text_style));
+            line1.push(Span::styled(
+                ws.display_name(),
+                text_style.add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            line1.push(Span::styled(
+                ws.display_name(),
+                text_style.add_modifier(Modifier::BOLD),
+            ));
+            line1.push(Span::styled("  ", dim_style));
+            for (pane_state, pane_seen) in ws.pane_states() {
+                let (pane_icon, pane_style) = state_icon_style(pane_state, pane_seen);
+                line1.push(Span::styled(
+                    pane_icon,
+                    if selected { pane_style.bg(app.accent) } else { pane_style },
+                ));
+            }
+        }
 
-    let items: Vec<ListItem> = app
-        .workspaces
-        .iter()
-        .enumerate()
-        .map(|(i, ws)| {
-            let selected = i == app.selected && is_navigating;
-            // When highlighted: text goes black on highlight bg, but icons keep their color
-            let text_style = if selected {
-                highlight_style
-            } else {
-                Style::default()
-            };
-            let dim_style = if selected {
-                highlight_style
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-
-            let marker = if Some(i) == app.active { "▸" } else { " " };
-            let (agg_state, agg_seen) = ws.aggregate_state();
-            let (rollup_icon, rollup_style) = state_icon_style(agg_state, agg_seen);
-            // Icon keeps its fg color, but picks up the highlight bg when selected
-            let icon_style = if selected {
-                rollup_style.bg(highlight_style.bg.unwrap_or(app.accent))
-            } else {
-                rollup_style
-            };
-
-            let num_label = format!("{}", i + 1);
-            let num_style = if selected {
-                highlight_style
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-
-            let mut spans = vec![
-                Span::styled(num_label, num_style),
-                Span::styled(format!("{marker}"), text_style),
-                Span::styled(rollup_icon, icon_style),
-                Span::styled(format!(" {}", ws.name), text_style),
-            ];
-
-            let pane_states = ws.pane_states();
-            let has_any_agent = pane_states.iter().any(|(s, _)| *s != AgentState::Unknown);
-
-            if ws.layout.pane_count() > 1 {
-                if has_any_agent {
-                    spans.push(Span::styled(" [", dim_style));
-                    for (pane_state, pane_seen) in &pane_states {
-                        let (icon, style) = state_icon_style(*pane_state, *pane_seen);
-                        let pane_icon_style = if selected {
-                            style.bg(highlight_style.bg.unwrap_or(app.accent))
-                        } else {
-                            style
-                        };
-                        spans.push(Span::styled(icon, pane_icon_style));
-                    }
-                    spans.push(Span::styled("]", dim_style));
-                } else {
-                    let count = ws.layout.pane_count();
-                    spans.push(Span::styled(format!(" [{count}]"), dim_style));
+        if selected {
+            let buf = frame.buffer_mut();
+            for y in row_y..=row_y + 1 {
+                for x in content.x..content.x + content.width {
+                    buf[(x, y)].set_style(highlight);
                 }
             }
+        }
 
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
+        frame.render_widget(Paragraph::new(Line::from(line1)), Rect::new(content.x, row_y, content.width, 1));
 
-    // No highlight_style on List — we handle it per-span above to preserve icon colors
-    let list = List::new(items);
-    let mut state = ListState::default().with_selected(Some(app.selected));
-    frame.render_stateful_widget(list, list_area, &mut state);
+        if app.mode == Mode::RenameSession && i == app.selected {
+            let text = format!("  {}\u{2588}", app.name_input);
+            frame.render_widget(Clear, Rect::new(content.x, row_y + 1, content.width, 1));
+            frame.render_widget(
+                Paragraph::new(text).style(Style::default().fg(Color::Yellow)),
+                Rect::new(content.x, row_y + 1, content.width, 1),
+            );
+        } else if let Some(summary) = ws.agent_summary() {
+            let line2 = Line::from(vec![
+                Span::styled("  ", dim_style),
+                Span::styled(summary, dim_style),
+            ]);
+            frame.render_widget(
+                Paragraph::new(line2),
+                Rect::new(content.x, row_y + 1, content.width, 1),
+            );
+        }
 
-    if app.mode == Mode::CreateSession {
-        let input_y = list_area.y + list_area.height.saturating_sub(1);
-        let input_area = Rect::new(content.x, input_y, content.width, 1);
-        let text = format!(" Name: {}\u{2588}", app.name_input);
-        frame.render_widget(
-            Paragraph::new(text).style(Style::default().fg(Color::Yellow)),
-            input_area,
-        );
+        row_y += 2;
     }
 
-    if app.mode == Mode::RenameSession {
-        let input_y = list_area.y + app.selected as u16;
-        let input_area = Rect::new(content.x, input_y, content.width, 1);
-        let text = format!(" ✎ {}\u{2588}", app.name_input);
-        frame.render_widget(Clear, input_area);
-        frame.render_widget(
-            Paragraph::new(text).style(Style::default().fg(Color::Yellow)),
-            input_area,
-        );
-    }
-
-    // Toggle button at bottom (skip when input field occupies that row)
-    if app.mode != Mode::CreateSession {
-        render_sidebar_toggle(frame, area, false);
-    }
+    frame.render_widget(
+        Paragraph::new(Span::styled("new", Style::default().fg(Color::DarkGray))),
+        Rect::new(content.x, new_row_y, content.width, 1),
+    );
+    render_sidebar_toggle(frame, area, false);
 }
 
 fn render_sidebar_toggle(frame: &mut Frame, area: Rect, collapsed: bool) {
@@ -547,7 +467,7 @@ fn render_empty(frame: &mut Frame, area: Rect, accent: Color) {
         Line::from(vec![
             Span::styled("  Press ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                "n",
+                "new",
                 Style::default().fg(accent).add_modifier(Modifier::BOLD),
             ),
             Span::styled(" to create one", Style::default().fg(Color::DarkGray)),
@@ -569,41 +489,29 @@ fn render_navigate_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
     let dim = Style::default().fg(Color::DarkGray);
     let label = Style::default().fg(Color::White);
 
-    let is_full = app
-        .active
-        .and_then(|i| app.workspaces.get(i))
-        .is_some_and(|ws| ws.zoomed);
-
-    let full_key = if is_full { "unfull" } else { "full" };
-
+    let kb = &app.keybinds;
     let line1 = Line::from(vec![
-        Span::styled(" n", key),
+        Span::styled(format!(" {}", kb.new_workspace_label), key),
         Span::styled(" new  ", dim),
-        Span::styled("N", key),
+        Span::styled(kb.rename_workspace_label.as_str(), key),
         Span::styled(" rename  ", dim),
-        Span::styled("d", key),
-        Span::styled(" close  ", dim),
-        Span::styled("v", key),
+        Span::styled(kb.close_workspace_label.as_str(), key),
+        Span::styled(" close ws  ", dim),
+        Span::styled(kb.split_vertical_label.as_str(), key),
         Span::styled(" split│  ", dim),
-        Span::styled("-", key),
+        Span::styled(kb.split_horizontal_label.as_str(), key),
         Span::styled(" split─  ", dim),
-        Span::styled("⇥", key),
-        Span::styled(" pane  ", dim),
-        Span::styled("f", key),
-        Span::styled(format!(" {full_key}  "), dim),
-        Span::styled("r", key),
-        Span::styled(" resize  ", dim),
-        Span::styled("b", key),
-        Span::styled(" sidebar  ", dim),
-        Span::styled("q", key),
-        Span::styled(" quit", dim),
+        Span::styled(kb.close_pane_label.as_str(), key),
+        Span::styled(" close pane  ", dim),
+        Span::styled(kb.fullscreen_label.as_str(), key),
+        Span::styled(" fullscreen", dim),
     ]);
 
     let ws_name = app
         .active
         .and_then(|i| app.workspaces.get(i))
-        .map(|ws| ws.name.as_str())
-        .unwrap_or("—");
+        .map(|ws| ws.display_name())
+        .unwrap_or_else(|| "—".to_string());
 
     let pane_info = app
         .active
@@ -633,9 +541,17 @@ fn render_navigate_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
         Span::styled("esc", key),
         Span::styled(" back  ", dim),
         Span::styled("↑↓", key),
-        Span::styled(" select  ", dim),
+        Span::styled(" ws  ", dim),
+        Span::styled("⇥", key),
+        Span::styled(" pane  ", dim),
+        Span::styled(kb.resize_mode_label.as_str(), key),
+        Span::styled(" resize  ", dim),
+        Span::styled(kb.toggle_sidebar_label.as_str(), key),
+        Span::styled(" sidebar  ", dim),
         Span::styled("⏎", key),
-        Span::styled(" open", dim),
+        Span::styled(" open  ", dim),
+        Span::styled("q", key),
+        Span::styled(" quit", dim),
     ]);
 
     let overlay_height = 2;
@@ -697,8 +613,8 @@ fn render_confirm_close_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
     let ws_name = app
         .workspaces
         .get(app.selected)
-        .map(|ws| ws.name.as_str())
-        .unwrap_or("?");
+        .map(|ws| ws.display_name())
+        .unwrap_or_else(|| "?".to_string());
     let pane_count = app
         .workspaces
         .get(app.selected)

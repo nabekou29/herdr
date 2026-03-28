@@ -1,17 +1,21 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use ratatui::layout::Direction;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::detect::{self, AgentState};
+use crate::detect::{self, Agent, AgentState};
 use crate::events::AppEvent;
 use crate::layout::{PaneId, TileLayout};
 use crate::pane::{PaneRuntime, PaneState};
 
 /// A named workspace containing tiled terminal panes.
 pub struct Workspace {
-    pub name: String,
+    /// User-provided override. If set, auto-derived identity stops updating.
+    pub custom_name: Option<String>,
+    /// Identity source for this workspace.
+    pub root_pane: PaneId,
     pub layout: TileLayout,
     /// Pane state — always present, testable without PTYs.
     pub panes: HashMap<PaneId, PaneState>,
@@ -23,24 +27,23 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(
-        name: String,
+        initial_cwd: PathBuf,
         rows: u16,
         cols: u16,
         events: mpsc::Sender<AppEvent>,
     ) -> std::io::Result<Self> {
         let (layout, root_id) = TileLayout::new();
-
-        let cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());
-        let runtime = PaneRuntime::spawn(root_id, rows, cols, cwd, events.clone())?;
+        let runtime = PaneRuntime::spawn(root_id, rows, cols, initial_cwd, events.clone())?;
 
         let mut panes = HashMap::new();
         panes.insert(root_id, PaneState::new());
         let mut runtimes = HashMap::new();
         runtimes.insert(root_id, runtime);
 
-        info!(workspace = %name, root_pane = root_id.raw(), "workspace created");
+        info!(root_pane = root_id.raw(), "workspace created");
         Ok(Self {
-            name,
+            custom_name: None,
+            root_pane: root_id,
             layout,
             panes,
             runtimes,
@@ -55,11 +58,10 @@ impl Workspace {
         direction: Direction,
         rows: u16,
         cols: u16,
-        cwd: Option<std::path::PathBuf>,
+        cwd: Option<PathBuf>,
     ) -> std::io::Result<PaneId> {
         let new_id = self.layout.split_focused(direction);
-        let actual_cwd =
-            cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+        let actual_cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
         let runtime = PaneRuntime::spawn(new_id, rows, cols, actual_cwd, self.events.clone())?;
         self.panes.insert(new_id, PaneState::new());
         self.runtimes.insert(new_id, runtime);
@@ -69,23 +71,93 @@ impl Workspace {
 
     /// Close the focused pane. Returns the removed pane id, or None if last pane.
     pub fn close_focused(&mut self) -> Option<PaneId> {
+        let pane_id = self.layout.focused();
+        self.remove_pane(pane_id)
+    }
+
+    /// Remove a specific pane from this workspace.
+    /// Returns None if it's the last pane and the whole workspace should close.
+    pub fn remove_pane(&mut self, pane_id: PaneId) -> Option<PaneId> {
         if self.layout.pane_count() <= 1 {
             return None;
         }
-        let closed = self.layout.focused();
-        if self.layout.close_focused() {
-            self.panes.remove(&closed);
-            self.runtimes.remove(&closed);
-            self.zoomed = false;
-            Some(closed)
+
+        let next_root = self.promoted_root_if_needed(pane_id);
+
+        if self.layout.focused() == pane_id {
+            self.layout.close_focused();
         } else {
-            None
+            let prev_focus = self.layout.focused();
+            self.layout.focus_pane(pane_id);
+            self.layout.close_focused();
+            self.layout.focus_pane(prev_focus);
         }
+
+        self.panes.remove(&pane_id);
+        self.runtimes.remove(&pane_id);
+        self.zoomed = false;
+        if let Some(next_root) = next_root {
+            self.root_pane = next_root;
+        }
+        Some(pane_id)
+    }
+
+    fn promoted_root_if_needed(&self, closing: PaneId) -> Option<PaneId> {
+        if self.root_pane != closing {
+            return None;
+        }
+        self.layout.pane_ids().into_iter().find(|id| *id != closing)
     }
 
     /// Get the runtime for the focused pane.
     pub fn focused_runtime(&self) -> Option<&PaneRuntime> {
         self.runtimes.get(&self.layout.focused())
+    }
+
+    pub fn set_custom_name(&mut self, name: String) {
+        self.custom_name = Some(name);
+    }
+
+    pub fn display_name(&self) -> String {
+        if let Some(name) = &self.custom_name {
+            return name.clone();
+        }
+
+        self.root_cwd()
+            .as_deref()
+            .map(derive_label_from_cwd)
+            .unwrap_or_else(|| "shell".to_string())
+    }
+
+    pub fn root_cwd(&self) -> Option<PathBuf> {
+        self.runtimes.get(&self.root_pane).and_then(|rt| rt.cwd())
+    }
+
+    pub fn agent_summary(&self) -> Option<String> {
+        let mut names = Vec::new();
+
+        for id in self.layout.pane_ids() {
+            if let Some(agent) = self.panes.get(&id).and_then(|p| p.detected_agent) {
+                let name = agent_name(agent);
+                if !names.iter().any(|n| *n == name) {
+                    names.push(name);
+                }
+            }
+        }
+
+        if names.is_empty() {
+            if self.root_cwd().is_some() {
+                Some("shell".to_string())
+            } else {
+                None
+            }
+        } else if names.len() == 1 {
+            Some(names[0].to_string())
+        } else if names.len() == 2 {
+            Some(format!("{} + {}", names[0], names[1]))
+        } else {
+            Some(format!("{} + {} +{}", names[0], names[1], names.len() - 2))
+        }
     }
 
     /// Aggregate state + seen across all panes.
@@ -112,6 +184,60 @@ impl Workspace {
     }
 }
 
+fn agent_name(agent: Agent) -> &'static str {
+    match agent {
+        Agent::Pi => "pi",
+        Agent::Claude => "claude",
+        Agent::Codex => "codex",
+        Agent::Gemini => "gemini",
+        Agent::Cursor => "cursor",
+        Agent::Cline => "cline",
+        Agent::OpenCode => "opencode",
+        Agent::GithubCopilot => "copilot",
+        Agent::Kimi => "kimi",
+        Agent::Droid => "droid",
+        Agent::Amp => "amp",
+    }
+}
+
+fn derive_label_from_cwd(cwd: &Path) -> String {
+    if let Some(repo_root) = git_repo_root(cwd) {
+        if let Some(name) = repo_root.file_name().and_then(|n| n.to_str()) {
+            return name.to_string();
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let home = Path::new(&home);
+        if cwd == home {
+            return "~".to_string();
+        }
+    }
+
+    cwd.file_name()
+        .and_then(|n| n.to_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| cwd.display().to_string())
+}
+
+fn git_repo_root(start: &Path) -> Option<PathBuf> {
+    let mut current = if start.is_dir() {
+        start.to_path_buf()
+    } else {
+        start.parent()?.to_path_buf()
+    };
+
+    loop {
+        if current.join(".git").exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers — construct workspaces without PTYs
 // ---------------------------------------------------------------------------
@@ -125,7 +251,8 @@ impl Workspace {
         let mut panes = HashMap::new();
         panes.insert(root_id, PaneState::new());
         Self {
-            name: name.to_string(),
+            custom_name: Some(name.to_string()),
+            root_pane: root_id,
             layout,
             panes,
             runtimes: HashMap::new(),
@@ -160,13 +287,11 @@ mod tests {
         let mut ws = Workspace::test_new("test");
         let id2 = ws.test_split(Direction::Horizontal);
 
-        // Set one pane to Busy, one to Idle
         let root_id = *ws.panes.keys().find(|id| **id != id2).unwrap();
         ws.panes.get_mut(&root_id).unwrap().state = AgentState::Idle;
         ws.panes.get_mut(&id2).unwrap().state = AgentState::Busy;
 
         let (state, _) = ws.aggregate_state();
-        // Busy should be higher priority than Idle
         assert_eq!(state, AgentState::Busy);
     }
 
@@ -207,13 +332,21 @@ mod tests {
         let mut ws = Workspace::test_new("test");
         let id2 = ws.test_split(Direction::Horizontal);
 
-        // Set second pane to Waiting
         ws.panes.get_mut(&id2).unwrap().state = AgentState::Waiting;
 
         let states = ws.pane_states();
         assert_eq!(states.len(), 2);
-        // One should be Unknown, one Waiting
         assert!(states.iter().any(|(s, _)| *s == AgentState::Waiting));
         assert!(states.iter().any(|(s, _)| *s == AgentState::Unknown));
+    }
+
+    #[test]
+    fn closing_root_promotes_another_pane() {
+        let mut ws = Workspace::test_new("test");
+        let root = ws.root_pane;
+        let other = ws.test_split(Direction::Horizontal);
+        ws.layout.focus_pane(root);
+        ws.remove_pane(root);
+        assert_eq!(ws.root_pane, other);
     }
 }

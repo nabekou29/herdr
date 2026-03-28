@@ -20,7 +20,6 @@ impl App {
         match self.state.mode {
             Mode::Navigate => handle_navigate_key(&mut self.state, key),
             Mode::Terminal => self.handle_terminal_key(key).await,
-            Mode::CreateSession => handle_create_key(self, key),
             Mode::RenameSession => handle_rename_key(&mut self.state, key),
             Mode::Resize => handle_resize_key(&mut self.state, key),
             Mode::ConfirmClose => handle_confirm_close_key(&mut self.state, key),
@@ -78,55 +77,28 @@ fn handle_navigate_key(state: &mut AppState, key: KeyEvent) {
     state.update_dismissed = true;
 
     if state.is_prefix(&key) || key.code == KeyCode::Esc {
-        if state.active.is_some() {
-            state.mode = Mode::Terminal;
-        }
+        leave_navigate_mode(state);
         return;
     }
 
-    // Configurable keybinds (checked before fixed binds)
-    let kb = &state.keybinds;
-    if key_matches(&key, kb.split_vertical.0, kb.split_vertical.1) {
-        state.split_pane(Direction::Horizontal);
-        return;
-    }
-    if key_matches(&key, kb.split_horizontal.0, kb.split_horizontal.1) {
-        state.split_pane(Direction::Vertical);
-        return;
-    }
-    if key_matches(&key, kb.close_pane.0, kb.close_pane.1) {
-        state.close_pane();
-        return;
-    }
-    if key_matches(&key, kb.fullscreen.0, kb.fullscreen.1) {
-        state.toggle_fullscreen();
+    if let Some(action) = navigate_action_for_key(state, &key) {
+        execute_navigate_action(state, action);
         return;
     }
 
     match key.code {
         KeyCode::Char('q') => state.should_quit = true,
-        KeyCode::Char('n') => {
-            state.mode = Mode::CreateSession;
-            state.name_input.clear();
-        }
-        KeyCode::Char('N') => {
+        KeyCode::Enter => {
             if !state.workspaces.is_empty() {
-                state.name_input = state.workspaces[state.selected].name.clone();
-                state.mode = Mode::RenameSession;
+                state.switch_workspace(state.selected);
+                leave_navigate_mode(state);
             }
         }
-        KeyCode::Char('d') => {
-            if !state.workspaces.is_empty() {
-                if state.confirm_close {
-                    state.mode = Mode::ConfirmClose;
-                } else {
-                    state.close_selected_workspace();
-                    if state.workspaces.is_empty() {
-                        state.mode = Mode::Navigate;
-                    } else {
-                        state.mode = Mode::Terminal;
-                    }
-                }
+        KeyCode::Char(c @ '1'..='9') => {
+            let idx = (c as usize) - ('1' as usize);
+            if idx < state.workspaces.len() {
+                state.switch_workspace(idx);
+                leave_navigate_mode(state);
             }
         }
         KeyCode::Up => {
@@ -139,53 +111,110 @@ fn handle_navigate_key(state: &mut AppState, key: KeyEvent) {
                 state.selected += 1;
             }
         }
-        KeyCode::Enter => {
-            if !state.workspaces.is_empty() {
-                state.switch_workspace(state.selected);
-                state.mode = Mode::Terminal;
-            }
-        }
         KeyCode::Char('h') | KeyCode::Left => state.navigate_pane(NavDirection::Left),
         KeyCode::Char('j') => state.navigate_pane(NavDirection::Down),
         KeyCode::Char('k') => state.navigate_pane(NavDirection::Up),
         KeyCode::Char('l') | KeyCode::Right => state.navigate_pane(NavDirection::Right),
         KeyCode::Tab => state.cycle_pane(false),
         KeyCode::BackTab => state.cycle_pane(true),
-        KeyCode::Char('r') => state.mode = Mode::Resize,
-        KeyCode::Char('b') => state.sidebar_collapsed = !state.sidebar_collapsed,
-        KeyCode::Char(c @ '1'..='9') => {
-            let idx = (c as usize) - ('1' as usize);
-            if idx < state.workspaces.len() {
-                state.switch_workspace(idx);
-                state.mode = Mode::Terminal;
-            }
-        }
         _ => {}
     }
 }
 
-fn handle_create_key(app: &mut App, key: KeyEvent) {
-    match key.code {
-        KeyCode::Enter => {
-            let name = if app.state.name_input.trim().is_empty() {
-                format!("workspace-{}", app.state.workspaces.len() + 1)
-            } else {
-                app.state.name_input.trim().to_string()
-            };
-            app.state.name_input.clear();
-            app.create_workspace(name);
+#[derive(Debug, Clone, Copy)]
+enum NavigateAction {
+    NewWorkspace,
+    RenameWorkspace,
+    CloseWorkspace,
+    SplitVertical,
+    SplitHorizontal,
+    ClosePane,
+    Fullscreen,
+    EnterResizeMode,
+    ToggleSidebar,
+}
+
+fn navigate_action_for_key(state: &AppState, key: &KeyEvent) -> Option<NavigateAction> {
+    let kb = &state.keybinds;
+    if key_matches(key, kb.new_workspace.0, kb.new_workspace.1) {
+        return Some(NavigateAction::NewWorkspace);
+    }
+    if key_matches(key, kb.rename_workspace.0, kb.rename_workspace.1) {
+        return Some(NavigateAction::RenameWorkspace);
+    }
+    if key_matches(key, kb.close_workspace.0, kb.close_workspace.1) {
+        return Some(NavigateAction::CloseWorkspace);
+    }
+    if key_matches(key, kb.split_vertical.0, kb.split_vertical.1) {
+        return Some(NavigateAction::SplitVertical);
+    }
+    if key_matches(key, kb.split_horizontal.0, kb.split_horizontal.1) {
+        return Some(NavigateAction::SplitHorizontal);
+    }
+    if key_matches(key, kb.close_pane.0, kb.close_pane.1) {
+        return Some(NavigateAction::ClosePane);
+    }
+    if key_matches(key, kb.fullscreen.0, kb.fullscreen.1) {
+        return Some(NavigateAction::Fullscreen);
+    }
+    if key_matches(key, kb.resize_mode.0, kb.resize_mode.1) {
+        return Some(NavigateAction::EnterResizeMode);
+    }
+    if key_matches(key, kb.toggle_sidebar.0, kb.toggle_sidebar.1) {
+        return Some(NavigateAction::ToggleSidebar);
+    }
+    None
+}
+
+fn execute_navigate_action(state: &mut AppState, action: NavigateAction) {
+    match action {
+        NavigateAction::NewWorkspace => {
+            state.request_new_workspace = true;
+            leave_navigate_mode(state);
         }
-        KeyCode::Esc => {
-            app.state.name_input.clear();
-            app.state.mode = Mode::Navigate;
+        NavigateAction::RenameWorkspace => {
+            if !state.workspaces.is_empty() {
+                state.name_input = state.workspaces[state.selected].display_name();
+                state.mode = Mode::RenameSession;
+            }
         }
-        KeyCode::Backspace => {
-            app.state.name_input.pop();
+        NavigateAction::CloseWorkspace => {
+            if !state.workspaces.is_empty() {
+                if state.confirm_close {
+                    state.mode = Mode::ConfirmClose;
+                } else {
+                    state.close_selected_workspace();
+                    leave_navigate_mode(state);
+                }
+            }
         }
-        KeyCode::Char(c) => {
-            app.state.name_input.push(c);
+        NavigateAction::SplitVertical => {
+            state.split_pane(Direction::Horizontal);
+            leave_navigate_mode(state);
         }
-        _ => {}
+        NavigateAction::SplitHorizontal => {
+            state.split_pane(Direction::Vertical);
+            leave_navigate_mode(state);
+        }
+        NavigateAction::ClosePane => {
+            state.close_pane();
+            leave_navigate_mode(state);
+        }
+        NavigateAction::Fullscreen => {
+            state.toggle_fullscreen();
+            leave_navigate_mode(state);
+        }
+        NavigateAction::EnterResizeMode => state.mode = Mode::Resize,
+        NavigateAction::ToggleSidebar => {
+            state.sidebar_collapsed = !state.sidebar_collapsed;
+            leave_navigate_mode(state);
+        }
+    }
+}
+
+fn leave_navigate_mode(state: &mut AppState) {
+    if state.active.is_some() {
+        state.mode = Mode::Terminal;
     }
 }
 
@@ -198,7 +227,7 @@ fn handle_rename_key(state: &mut AppState, key: KeyEvent) {
                 state.name_input.trim().to_string()
             };
             if !new_name.is_empty() && !state.workspaces.is_empty() {
-                state.workspaces[state.selected].name = new_name;
+                state.workspaces[state.selected].set_custom_name(new_name);
             }
             state.name_input.clear();
             state.mode = Mode::Navigate;
@@ -218,14 +247,19 @@ fn handle_rename_key(state: &mut AppState, key: KeyEvent) {
 }
 
 fn handle_resize_key(state: &mut AppState, key: KeyEvent) {
-    match key.code {
-        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('r') => {
-            if state.active.is_some() {
-                state.mode = Mode::Terminal;
-            } else {
-                state.mode = Mode::Navigate;
-            }
+    if key.code == KeyCode::Esc
+        || key.code == KeyCode::Enter
+        || key_matches(&key, state.keybinds.resize_mode.0, state.keybinds.resize_mode.1)
+    {
+        if state.active.is_some() {
+            state.mode = Mode::Terminal;
+        } else {
+            state.mode = Mode::Navigate;
         }
+        return;
+    }
+
+    match key.code {
         KeyCode::Char('h') | KeyCode::Left => state.resize_pane(NavDirection::Left),
         KeyCode::Char('l') | KeyCode::Right => state.resize_pane(NavDirection::Right),
         KeyCode::Char('j') | KeyCode::Down => state.resize_pane(NavDirection::Down),
@@ -275,7 +309,7 @@ fn handle_context_menu_key(state: &mut AppState, key: KeyEvent) {
                 match CONTEXT_MENU_ITEMS[menu.selected] {
                     "Rename" => {
                         state.selected = menu.ws_idx;
-                        state.name_input = state.workspaces[menu.ws_idx].name.clone();
+                        state.name_input = state.workspaces[menu.ws_idx].display_name();
                         state.mode = Mode::RenameSession;
                     }
                     "Close" => {
@@ -320,7 +354,7 @@ impl AppState {
                             match CONTEXT_MENU_ITEMS[idx] {
                                 "Rename" => {
                                     self.selected = ws_idx;
-                                    self.name_input = self.workspaces[ws_idx].name.clone();
+                                    self.name_input = self.workspaces[ws_idx].display_name();
                                     self.mode = Mode::RenameSession;
                                 }
                                 "Close" => {
@@ -355,14 +389,21 @@ impl AppState {
 
                 if in_sidebar {
                     let bottom_y = sidebar.y + sidebar.height.saturating_sub(1);
+                    let new_row_y = bottom_y.saturating_sub(1);
+
                     if mouse.row == bottom_y {
                         self.sidebar_collapsed = !self.sidebar_collapsed;
                         return;
                     }
 
-                    let inner_y = sidebar.y + 1;
-                    if mouse.row >= inner_y {
-                        let idx = (mouse.row - inner_y) as usize;
+                    if !self.sidebar_collapsed && mouse.row == new_row_y {
+                        self.request_new_workspace = true;
+                        return;
+                    }
+
+                    let inner_y = sidebar.y;
+                    if mouse.row >= inner_y && mouse.row < new_row_y {
+                        let idx = ((mouse.row - inner_y) / 2) as usize;
                         if idx < self.workspaces.len() {
                             self.switch_workspace(idx);
                             self.mode = Mode::Terminal;
@@ -467,9 +508,11 @@ impl AppState {
             }
 
             MouseEventKind::Down(MouseButton::Right) if in_sidebar => {
-                let inner_y = sidebar.y + 1;
-                if mouse.row >= inner_y {
-                    let idx = (mouse.row - inner_y) as usize;
+                let inner_y = sidebar.y;
+                let bottom_y = sidebar.y + sidebar.height.saturating_sub(1);
+                let new_row_y = bottom_y.saturating_sub(1);
+                if mouse.row >= inner_y && mouse.row < new_row_y {
+                    let idx = ((mouse.row - inner_y) / 2) as usize;
                     if idx < self.workspaces.len() {
                         self.selected = idx;
                         self.context_menu = Some(ContextMenuState {
@@ -550,5 +593,107 @@ impl AppState {
                 self.mode = Mode::Terminal;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+    use crate::workspace::Workspace;
+
+    fn state_with_workspaces(names: &[&str]) -> AppState {
+        let mut state = AppState::test_new();
+        state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
+        if !state.workspaces.is_empty() {
+            state.active = Some(0);
+            state.selected = 0;
+            state.mode = Mode::Navigate;
+        }
+        state
+    }
+
+    #[test]
+    fn custom_rename_key_enters_rename_mode() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.keybinds.rename_workspace = (KeyCode::Char('g'), KeyModifiers::empty());
+        state.keybinds.rename_workspace_label = "g".into();
+
+        handle_navigate_key(&mut state, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()));
+
+        assert_eq!(state.mode, Mode::RenameSession);
+        assert_eq!(state.name_input, "test");
+    }
+
+    #[test]
+    fn custom_new_workspace_key_requests_and_exits_navigate() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.keybinds.new_workspace = (KeyCode::Char('g'), KeyModifiers::empty());
+        state.keybinds.new_workspace_label = "g".into();
+
+        handle_navigate_key(&mut state, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()));
+
+        assert!(state.request_new_workspace);
+        assert_eq!(state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn custom_sidebar_toggle_key_toggles_and_exits_navigate() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.keybinds.toggle_sidebar = (KeyCode::Char('g'), KeyModifiers::empty());
+        state.keybinds.toggle_sidebar_label = "g".into();
+        assert!(!state.sidebar_collapsed);
+
+        handle_navigate_key(&mut state, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()));
+
+        assert!(state.sidebar_collapsed);
+        assert_eq!(state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn custom_resize_key_enters_resize_mode() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.keybinds.resize_mode = (KeyCode::Char('g'), KeyModifiers::empty());
+        state.keybinds.resize_mode_label = "g".into();
+
+        handle_navigate_key(&mut state, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()));
+
+        assert_eq!(state.mode, Mode::Resize);
+    }
+
+    #[test]
+    fn movement_action_stays_in_navigate_mode() {
+        let mut state = state_with_workspaces(&["a", "b"]);
+        state.selected = 0;
+
+        handle_navigate_key(&mut state, KeyEvent::new(KeyCode::Down, KeyModifiers::empty()));
+
+        assert_eq!(state.selected, 1);
+        assert_eq!(state.mode, Mode::Navigate);
+    }
+
+    #[test]
+    fn fullscreen_action_exits_navigate_mode() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.workspaces[0].test_split(Direction::Horizontal);
+        state.keybinds.fullscreen = (KeyCode::Char('g'), KeyModifiers::empty());
+        state.keybinds.fullscreen_label = "g".into();
+
+        handle_navigate_key(&mut state, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()));
+
+        assert!(state.workspaces[0].zoomed);
+        assert_eq!(state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn custom_resize_key_exits_resize_mode() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.mode = Mode::Resize;
+        state.keybinds.resize_mode = (KeyCode::Char('g'), KeyModifiers::empty());
+        state.keybinds.resize_mode_label = "g".into();
+
+        handle_resize_key(&mut state, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()));
+
+        assert_eq!(state.mode, Mode::Terminal);
     }
 }

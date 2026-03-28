@@ -71,11 +71,16 @@ const DEFAULT_CONFIG: &str = r#"# herdr configuration
 # alt+... and punctuation-with-modifiers may depend on your terminal/tmux setup.
 # prefix = "ctrl+b"
 
-# Pane controls (in navigate mode)
+# Navigate-mode actions
+# new_workspace = "n"
+# rename_workspace = "shift+n"
+# close_workspace = "d"
 # split_vertical = "v"
 # split_horizontal = "-"
 # close_pane = "x"
 # fullscreen = "f"
+# resize_mode = "r"
+# toggle_sidebar = "b"
 
 [ui]
 # Sidebar width (auto-scaled based on workspace names, this sets the default)

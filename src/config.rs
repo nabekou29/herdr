@@ -18,6 +18,12 @@ pub struct Config {
 pub struct KeysConfig {
     /// Prefix key to toggle navigate mode (e.g. "ctrl+b", "f12", "esc").
     pub prefix: String,
+    /// Create a new workspace. Default: "n"
+    pub new_workspace: String,
+    /// Rename the selected workspace. Default: "shift+n"
+    pub rename_workspace: String,
+    /// Close the selected workspace. Default: "d"
+    pub close_workspace: String,
     /// Split pane vertically (side by side). Default: "v"
     pub split_vertical: String,
     /// Split pane horizontally (stacked). Default: "-"
@@ -26,6 +32,10 @@ pub struct KeysConfig {
     pub close_pane: String,
     /// Toggle fullscreen for the focused pane. Default: "f"
     pub fullscreen: String,
+    /// Enter resize mode. Default: "r"
+    pub resize_mode: String,
+    /// Toggle sidebar collapse. Default: "b"
+    pub toggle_sidebar: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -106,10 +116,15 @@ impl Default for KeysConfig {
     fn default() -> Self {
         Self {
             prefix: "ctrl+b".into(),
+            new_workspace: "n".into(),
+            rename_workspace: "shift+n".into(),
+            close_workspace: "d".into(),
             split_vertical: "v".into(),
             split_horizontal: "-".into(),
             close_pane: "x".into(),
             fullscreen: "f".into(),
+            resize_mode: "r".into(),
+            toggle_sidebar: "b".into(),
         }
     }
 }
@@ -175,38 +190,63 @@ impl Config {
         )
     }
 
-    /// Human-readable label for the prefix key (shown in status bar).
-    pub fn prefix_label(&self) -> String {
-        if parse_key_combo(&self.keys.prefix).is_some() {
-            self.keys.prefix.clone()
-        } else {
-            "ctrl+b".into()
-        }
-    }
-
     /// Parsed keybinds for navigate mode actions.
     pub fn keybinds(&self) -> Keybinds {
         Keybinds {
+            new_workspace: parse_key_combo_or_warn(
+                &self.keys.new_workspace,
+                "keys.new_workspace",
+                (KeyCode::Char('n'), KeyModifiers::empty()),
+            ),
+            new_workspace_label: self.keys.new_workspace.clone(),
+            rename_workspace: parse_key_combo_or_warn(
+                &self.keys.rename_workspace,
+                "keys.rename_workspace",
+                (KeyCode::Char('n'), KeyModifiers::SHIFT),
+            ),
+            rename_workspace_label: self.keys.rename_workspace.clone(),
+            close_workspace: parse_key_combo_or_warn(
+                &self.keys.close_workspace,
+                "keys.close_workspace",
+                (KeyCode::Char('d'), KeyModifiers::empty()),
+            ),
+            close_workspace_label: self.keys.close_workspace.clone(),
             split_vertical: parse_key_combo_or_warn(
                 &self.keys.split_vertical,
                 "keys.split_vertical",
                 (KeyCode::Char('v'), KeyModifiers::empty()),
             ),
+            split_vertical_label: self.keys.split_vertical.clone(),
             split_horizontal: parse_key_combo_or_warn(
                 &self.keys.split_horizontal,
                 "keys.split_horizontal",
                 (KeyCode::Char('-'), KeyModifiers::empty()),
             ),
+            split_horizontal_label: self.keys.split_horizontal.clone(),
             close_pane: parse_key_combo_or_warn(
                 &self.keys.close_pane,
                 "keys.close_pane",
                 (KeyCode::Char('x'), KeyModifiers::empty()),
             ),
+            close_pane_label: self.keys.close_pane.clone(),
             fullscreen: parse_key_combo_or_warn(
                 &self.keys.fullscreen,
                 "keys.fullscreen",
                 (KeyCode::Char('f'), KeyModifiers::empty()),
             ),
+            fullscreen_label: self.keys.fullscreen.clone(),
+            resize_mode: parse_key_combo_or_warn(
+                &self.keys.resize_mode,
+                "keys.resize_mode",
+                (KeyCode::Char('r'), KeyModifiers::empty()),
+            ),
+            resize_mode_label: self.keys.resize_mode.clone(),
+            toggle_sidebar: parse_key_combo_or_warn(
+                &self.keys.toggle_sidebar,
+                "keys.toggle_sidebar",
+                (KeyCode::Char('b'), KeyModifiers::empty()),
+            ),
+            toggle_sidebar_label: self.keys.toggle_sidebar.clone(),
         }
     }
 }
@@ -214,10 +254,24 @@ impl Config {
 /// Parsed keybinds for navigate mode actions.
 #[derive(Debug, Clone)]
 pub struct Keybinds {
+    pub new_workspace: (KeyCode, KeyModifiers),
+    pub new_workspace_label: String,
+    pub rename_workspace: (KeyCode, KeyModifiers),
+    pub rename_workspace_label: String,
+    pub close_workspace: (KeyCode, KeyModifiers),
+    pub close_workspace_label: String,
     pub split_vertical: (KeyCode, KeyModifiers),
+    pub split_vertical_label: String,
     pub split_horizontal: (KeyCode, KeyModifiers),
+    pub split_horizontal_label: String,
     pub close_pane: (KeyCode, KeyModifiers),
+    pub close_pane_label: String,
     pub fullscreen: (KeyCode, KeyModifiers),
+    pub fullscreen_label: String,
+    pub resize_mode: (KeyCode, KeyModifiers),
+    pub resize_mode_label: String,
+    pub toggle_sidebar: (KeyCode, KeyModifiers),
+    pub toggle_sidebar_label: String,
 }
 
 /// Parse a color string into a ratatui Color.
@@ -319,13 +373,22 @@ fn parse_key_combo(s: &str) -> Option<(KeyCode, KeyModifiers)> {
 
     let key_str = key_str?;
 
-    let code = match key_str.to_lowercase().as_str() {
+    let lower = key_str.to_lowercase();
+    let code = match lower.as_str() {
         "space" | " " => KeyCode::Char(' '),
         "enter" | "return" => KeyCode::Enter,
         "esc" | "escape" => KeyCode::Esc,
         "tab" => KeyCode::Tab,
         "backspace" | "bs" => KeyCode::Backspace,
-        s if s.len() == 1 => KeyCode::Char(key_str.chars().next().unwrap()),
+        s if s.len() == 1 => {
+            let ch = key_str.chars().next().unwrap();
+            if ch.is_ascii_uppercase() {
+                modifiers |= KeyModifiers::SHIFT;
+                KeyCode::Char(ch.to_ascii_lowercase())
+            } else {
+                KeyCode::Char(ch)
+            }
+        }
         s if s.starts_with('f') => s[1..].parse::<u8>().ok().map(KeyCode::F)?,
         _ => return None,
     };
@@ -409,6 +472,22 @@ mod tests {
     }
 
     #[test]
+    fn uppercase_char_implies_shift() {
+        assert_eq!(
+            parse_key_combo("D"),
+            Some((KeyCode::Char('d'), KeyModifiers::SHIFT))
+        );
+    }
+
+    #[test]
+    fn explicit_shift_and_uppercase_do_not_double_apply_shift() {
+        assert_eq!(
+            parse_key_combo("shift+D"),
+            Some((KeyCode::Char('d'), KeyModifiers::SHIFT))
+        );
+    }
+
+    #[test]
     fn invalid_keybinding_is_rejected() {
         assert_eq!(parse_key_combo("ctrl+foo+bar"), None);
         assert_eq!(parse_key_combo("ctrl+"), None);
@@ -418,10 +497,15 @@ mod tests {
     fn default_keybinds_parse() {
         let config = Config::default();
         let kb = config.keybinds();
+        assert_eq!(kb.new_workspace.0, KeyCode::Char('n'));
+        assert_eq!(kb.rename_workspace, (KeyCode::Char('n'), KeyModifiers::SHIFT));
+        assert_eq!(kb.close_workspace.0, KeyCode::Char('d'));
         assert_eq!(kb.split_vertical.0, KeyCode::Char('v'));
         assert_eq!(kb.split_horizontal.0, KeyCode::Char('-'));
         assert_eq!(kb.close_pane.0, KeyCode::Char('x'));
         assert_eq!(kb.fullscreen.0, KeyCode::Char('f'));
+        assert_eq!(kb.resize_mode.0, KeyCode::Char('r'));
+        assert_eq!(kb.toggle_sidebar.0, KeyCode::Char('b'));
     }
 
     #[test]
@@ -429,10 +513,15 @@ mod tests {
         let toml = r#"
 [keys]
 prefix = "ctrl+a"
+new_workspace = "c"
+rename_workspace = "shift+r"
+close_workspace = "ctrl+d"
 split_vertical = "s"
 split_horizontal = "shift+s"
 close_pane = "ctrl+w"
 fullscreen = "z"
+resize_mode = "ctrl+r"
+toggle_sidebar = "tab"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         let (code, mods) = config.prefix_key();
@@ -440,6 +529,9 @@ fullscreen = "z"
         assert_eq!(mods, KeyModifiers::CONTROL);
 
         let kb = config.keybinds();
+        assert_eq!(kb.new_workspace, (KeyCode::Char('c'), KeyModifiers::empty()));
+        assert_eq!(kb.rename_workspace, (KeyCode::Char('r'), KeyModifiers::SHIFT));
+        assert_eq!(kb.close_workspace, (KeyCode::Char('d'), KeyModifiers::CONTROL));
         assert_eq!(kb.split_vertical.0, KeyCode::Char('s'));
         assert_eq!(
             kb.split_horizontal,
@@ -447,6 +539,19 @@ fullscreen = "z"
         );
         assert_eq!(kb.close_pane, (KeyCode::Char('w'), KeyModifiers::CONTROL));
         assert_eq!(kb.fullscreen.0, KeyCode::Char('z'));
+        assert_eq!(kb.resize_mode, (KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert_eq!(kb.toggle_sidebar, (KeyCode::Tab, KeyModifiers::empty()));
+    }
+
+    #[test]
+    fn uppercase_keybind_from_toml_flows_into_shift_combo() {
+        let toml = r#"
+[keys]
+split_horizontal = "D"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let kb = config.keybinds();
+        assert_eq!(kb.split_horizontal, (KeyCode::Char('d'), KeyModifiers::SHIFT));
     }
 
     #[test]

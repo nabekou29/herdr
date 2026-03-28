@@ -20,7 +20,6 @@ pub struct ViewState {
 pub enum Mode {
     Navigate,
     Terminal,
-    CreateSession,
     RenameSession,
     Resize,
     ConfirmClose,
@@ -52,6 +51,7 @@ pub struct AppState {
     pub selected: usize,
     pub mode: Mode,
     pub should_quit: bool,
+    pub request_new_workspace: bool,
     pub name_input: String,
     // View geometry (computed before render, consumed by render + mouse)
     pub view: ViewState,
@@ -64,7 +64,6 @@ pub struct AppState {
     // Config
     pub prefix_code: KeyCode,
     pub prefix_mods: KeyModifiers,
-    pub prefix_label: String,
     pub sidebar_width: u16,
     pub sidebar_collapsed: bool,
     pub confirm_close: bool,
@@ -120,6 +119,7 @@ impl AppState {
             selected: 0,
             mode: Mode::Navigate,
             should_quit: false,
+            request_new_workspace: false,
             name_input: String::new(),
             view: ViewState {
                 sidebar_rect: Rect::default(),
@@ -134,7 +134,6 @@ impl AppState {
             update_dismissed: false,
             prefix_code: KeyCode::Char('b'),
             prefix_mods: KeyModifiers::CONTROL,
-            prefix_label: "ctrl+b".into(),
             sidebar_width: 26,
             sidebar_collapsed: false,
             confirm_close: true,
@@ -144,10 +143,24 @@ impl AppState {
                 ..SoundConfig::default()
             },
             keybinds: Keybinds {
+                new_workspace: (KeyCode::Char('n'), KeyModifiers::empty()),
+                new_workspace_label: "n".into(),
+                rename_workspace: (KeyCode::Char('n'), KeyModifiers::SHIFT),
+                rename_workspace_label: "shift+n".into(),
+                close_workspace: (KeyCode::Char('d'), KeyModifiers::empty()),
+                close_workspace_label: "d".into(),
                 split_vertical: (KeyCode::Char('v'), KeyModifiers::empty()),
+                split_vertical_label: "v".into(),
                 split_horizontal: (KeyCode::Char('-'), KeyModifiers::empty()),
+                split_horizontal_label: "-".into(),
                 close_pane: (KeyCode::Char('x'), KeyModifiers::empty()),
+                close_pane_label: "x".into(),
                 fullscreen: (KeyCode::Char('f'), KeyModifiers::empty()),
+                fullscreen_label: "f".into(),
+                resize_mode: (KeyCode::Char('r'), KeyModifiers::empty()),
+                resize_mode_label: "r".into(),
+                toggle_sidebar: (KeyCode::Char('b'), KeyModifiers::empty()),
+                toggle_sidebar_label: "b".into(),
             },
         }
     }

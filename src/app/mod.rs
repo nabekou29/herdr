@@ -66,6 +66,7 @@ impl App {
             selected,
             mode,
             should_quit: false,
+            request_new_workspace: false,
             name_input: String::new(),
             view: state::ViewState {
                 sidebar_rect: Rect::default(),
@@ -80,7 +81,6 @@ impl App {
             update_dismissed: false,
             prefix_code,
             prefix_mods,
-            prefix_label: config.prefix_label(),
             sidebar_width: config.ui.sidebar_width,
             sidebar_collapsed: false,
             confirm_close: config.ui.confirm_close,
@@ -126,6 +126,11 @@ impl App {
                     _ => {}
                 }
             }
+
+            if self.state.request_new_workspace {
+                self.state.request_new_workspace = false;
+                self.create_workspace();
+            }
         }
 
         // Save session on exit (skip in --no-session mode)
@@ -142,9 +147,17 @@ impl App {
     }
 
     /// Create a workspace with a real PTY (needs event_tx).
-    fn create_workspace(&mut self, name: String) {
+    fn create_workspace(&mut self) {
         let (rows, cols) = self.state.estimate_pane_size();
-        match Workspace::new(name, rows, cols, self.event_tx.clone()) {
+        let initial_cwd = self
+            .state
+            .active
+            .and_then(|i| self.state.workspaces.get(i))
+            .and_then(|ws| ws.focused_runtime())
+            .and_then(|rt| rt.cwd())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| std::path::PathBuf::from("/"));
+        match Workspace::new(initial_cwd, rows, cols, self.event_tx.clone()) {
             Ok(ws) => {
                 self.state.workspaces.push(ws);
                 let idx = self.state.workspaces.len() - 1;

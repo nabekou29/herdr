@@ -90,7 +90,7 @@ launch herdr:
 herdr
 ```
 
-herdr starts in **navigate mode**. press `n` to create your first workspace, type a name, press enter. you're in **terminal mode** with a shell ready.
+herdr starts in **navigate mode**. press `n` to create your first workspace. it opens immediately as a new terminal context, and the workspace label is derived from its path/repo.
 
 press `ctrl+b` (the prefix key) to switch back to navigate mode. from there you can manage workspaces and panes.
 
@@ -98,9 +98,9 @@ press `ctrl+b` (the prefix key) to switch back to navigate mode. from there you 
 
 | key | action | configurable |
 |-----|--------|:---:|
-| `n` | new workspace | |
-| `N` | rename workspace | |
-| `d` | close workspace | |
+| `n` | new workspace | ✓ |
+| `N` | rename workspace | ✓ |
+| `d` | close workspace | ✓ |
 | `1`-`9` | switch to workspace by number | |
 | `↑` `↓` | select workspace | |
 | `enter` | open selected workspace | |
@@ -110,8 +110,8 @@ press `ctrl+b` (the prefix key) to switch back to navigate mode. from there you 
 | `tab` | cycle panes | |
 | `f` | toggle fullscreen | ✓ |
 | `x` | close pane | ✓ |
-| `r` | enter resize mode | |
-| `b` | toggle sidebar collapse | |
+| `r` | enter resize mode | ✓ |
+| `b` | toggle sidebar collapse | ✓ |
 | `q` | quit | |
 
 keys marked ✓ can be changed in `~/.config/herdr/config.toml` under `[keys]`. the prefix key is also configurable.
@@ -157,11 +157,16 @@ herdr --default-config
 # prefix key to enter navigate mode
 prefix = "ctrl+b"
 
-# pane controls (in navigate mode)
+# navigate-mode actions
+new_workspace = "n"
+rename_workspace = "shift+n"
+close_workspace = "d"
 split_vertical = "v"
 split_horizontal = "-"
 close_pane = "x"
 fullscreen = "f"
+resize_mode = "r"
+toggle_sidebar = "b"
 
 [ui]
 # accent color: hex (#89b4fa), named (cyan, blue), or rgb(r,g,b)

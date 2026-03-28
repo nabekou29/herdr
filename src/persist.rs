@@ -17,7 +17,7 @@ use crate::pane::{PaneRuntime, PaneState};
 use crate::workspace::Workspace;
 
 /// Current snapshot format version.
-const SNAPSHOT_VERSION: u32 = 1;
+const SNAPSHOT_VERSION: u32 = 2;
 
 /// Serializable snapshot of the entire herdr session.
 #[derive(Serialize, Deserialize)]
@@ -32,13 +32,17 @@ pub struct SessionSnapshot {
 
 #[derive(Serialize, Deserialize)]
 pub struct WorkspaceSnapshot {
-    pub name: String,
+    #[serde(default)]
+    pub custom_name: Option<String>,
     pub layout: LayoutSnapshot,
     pub panes: HashMap<u32, PaneSnapshot>,
     pub zoomed: bool,
     /// Raw pane ID that was focused when saved.
     #[serde(default)]
     pub focused: Option<u32>,
+    /// Raw pane ID used as the workspace identity source.
+    #[serde(default)]
+    pub root_pane: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -91,11 +95,12 @@ fn capture_workspace(ws: &Workspace) -> WorkspaceSnapshot {
         panes.insert(id.raw(), PaneSnapshot { cwd });
     }
     WorkspaceSnapshot {
-        name: ws.name.clone(),
+        custom_name: ws.custom_name.clone(),
         layout: capture_node(ws.layout.root()),
         panes,
         zoomed: ws.zoomed,
         focused: Some(ws.layout.focused().raw()),
+        root_pane: Some(ws.root_pane.raw()),
     }
 }
 
@@ -170,14 +175,21 @@ fn restore_workspace(
                 runtimes.insert(*id, runtime);
             }
             Err(e) => {
-                error!(workspace = %snap.name, err = %e, "failed to restore pane");
+                error!(workspace = ?snap.custom_name, err = %e, "failed to restore pane");
                 return None;
             }
         }
     }
 
+    let root_pane = snap
+        .root_pane
+        .and_then(|old_raw| id_map.get(&old_raw).copied())
+        .or_else(|| pane_ids.first().copied())
+        .unwrap_or(PaneId::from_raw(0));
+
     Some(Workspace {
-        name: snap.name.clone(),
+        custom_name: snap.custom_name.clone(),
+        root_pane,
         layout,
         panes,
         runtimes,
@@ -321,7 +333,7 @@ mod tests {
     #[test]
     fn round_trip_empty_session() {
         let snap = SessionSnapshot {
-            version: 1,
+            version: SNAPSHOT_VERSION,
             workspaces: vec![],
             active: None,
             selected: 0,
@@ -373,7 +385,7 @@ mod tests {
 
         let snap = SessionSnapshot {
             workspaces: vec![WorkspaceSnapshot {
-                name: "pi-mono".to_string(),
+                custom_name: Some("pi-mono".to_string()),
                 layout: LayoutSnapshot::Split {
                     direction: DirectionSnapshot::Horizontal,
                     ratio: 0.5,
@@ -383,17 +395,18 @@ mod tests {
                 panes,
                 zoomed: false,
                 focused: Some(0),
+                root_pane: Some(0),
             }],
             active: Some(0),
             selected: 0,
-            version: 1,
+            version: SNAPSHOT_VERSION,
         };
 
         let json = serde_json::to_string_pretty(&snap).unwrap();
         let restored: SessionSnapshot = serde_json::from_str(&json).unwrap();
 
         assert_eq!(restored.workspaces.len(), 1);
-        assert_eq!(restored.workspaces[0].name, "pi-mono");
+        assert_eq!(restored.workspaces[0].custom_name.as_deref(), Some("pi-mono"));
         assert_eq!(restored.workspaces[0].panes.len(), 2);
         assert_eq!(
             restored.workspaces[0].panes[&0].cwd,
