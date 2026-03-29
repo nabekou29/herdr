@@ -11,6 +11,8 @@ pub mod state;
 use std::io;
 use std::time::{Duration, Instant};
 
+const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
+
 use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::layout::Rect;
 use ratatui::DefaultTerminal;
@@ -34,6 +36,7 @@ pub struct App {
     no_session: bool,
     config_diagnostic_deadline: Option<Instant>,
     toast_deadline: Option<Instant>,
+    last_git_remote_status_refresh: Instant,
 }
 
 /// Resolve the palette from config: base theme + optional custom overrides.
@@ -105,7 +108,7 @@ impl App {
             state::Mode::Navigate
         };
 
-        let state = AppState {
+        let mut state = AppState {
             workspaces,
             active,
             selected,
@@ -154,6 +157,10 @@ impl App {
             },
         };
 
+        for ws in &mut state.workspaces {
+            ws.refresh_git_ahead_behind();
+        }
+
         // Background auto-update (skipped in --no-session / test mode)
         if !no_session {
             let update_tx = event_tx.clone();
@@ -176,6 +183,7 @@ impl App {
             state,
             event_tx,
             event_rx,
+            last_git_remote_status_refresh: Instant::now(),
             api_rx,
             event_hub,
             last_focus,
@@ -202,6 +210,13 @@ impl App {
             }
 
             self.state.spinner_tick = self.state.spinner_tick.wrapping_add(1);
+
+            if self.last_git_remote_status_refresh.elapsed() >= GIT_REMOTE_STATUS_REFRESH_INTERVAL {
+                for ws in &mut self.state.workspaces {
+                    ws.refresh_git_ahead_behind();
+                }
+                self.last_git_remote_status_refresh = Instant::now();
+            }
 
             terminal.draw(|frame| {
                 crate::ui::compute_view(&mut self.state, frame.area());
@@ -976,7 +991,8 @@ impl App {
         focus: bool,
     ) -> std::io::Result<usize> {
         let (rows, cols) = self.state.estimate_pane_size();
-        let ws = Workspace::new(initial_cwd, rows, cols, self.event_tx.clone())?;
+        let mut ws = Workspace::new(initial_cwd, rows, cols, self.event_tx.clone())?;
+        ws.refresh_git_ahead_behind();
         self.state.workspaces.push(ws);
         let idx = self.state.workspaces.len() - 1;
         if focus || self.state.active.is_none() {

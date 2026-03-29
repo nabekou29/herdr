@@ -17,6 +17,8 @@ pub struct Workspace {
     /// Identity source for this workspace.
     pub root_pane: PaneId,
     pub layout: TileLayout,
+    /// Cached ahead/behind counts for the root repo's current branch upstream.
+    pub(crate) cached_git_ahead_behind: Option<(usize, usize)>,
     /// Stable-ish public pane numbers within this workspace.
     /// New panes append at the end; closing a pane compacts higher numbers down.
     pub public_pane_numbers: HashMap<PaneId, usize>,
@@ -51,6 +53,7 @@ impl Workspace {
             custom_name: None,
             root_pane: root_id,
             layout,
+            cached_git_ahead_behind: None,
             public_pane_numbers,
             next_public_pane_number: 2,
             panes,
@@ -239,6 +242,16 @@ impl Workspace {
     pub fn branch(&self) -> Option<String> {
         self.root_cwd().and_then(|cwd| git_branch(&cwd))
     }
+
+    /// Cached ahead/behind counts for this workspace's current branch upstream.
+    pub fn git_ahead_behind(&self) -> Option<(usize, usize)> {
+        self.cached_git_ahead_behind
+    }
+
+    /// Refresh cached ahead/behind counts from the workspace's current cwd.
+    pub fn refresh_git_ahead_behind(&mut self) {
+        self.cached_git_ahead_behind = self.root_cwd().and_then(|cwd| git_ahead_behind(&cwd));
+    }
 }
 
 /// Detail info for a single pane, used by the agent detail panel.
@@ -330,6 +343,32 @@ fn git_repo_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Read ahead/behind counts relative to the current branch upstream.
+fn git_ahead_behind(cwd: &Path) -> Option<(usize, usize)> {
+    git_repo_root(cwd)?;
+
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    parse_git_ahead_behind_output(&stdout)
+}
+
+fn parse_git_ahead_behind_output(stdout: &str) -> Option<(usize, usize)> {
+    let mut parts = stdout.split_whitespace();
+    let ahead = parts.next()?.parse().ok()?;
+    let behind = parts.next()?.parse().ok()?;
+    Some((ahead, behind))
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers — construct workspaces without PTYs
 // ---------------------------------------------------------------------------
@@ -348,6 +387,7 @@ impl Workspace {
             custom_name: Some(name.to_string()),
             root_pane: root_id,
             layout,
+            cached_git_ahead_behind: None,
             public_pane_numbers,
             next_public_pane_number: 2,
             panes,
@@ -447,5 +487,15 @@ mod tests {
         ws.layout.focus_pane(root);
         ws.remove_pane(root);
         assert_eq!(ws.root_pane, other);
+    }
+
+    #[test]
+    fn parse_git_ahead_behind_output_maps_first_field_to_ahead() {
+        assert_eq!(parse_git_ahead_behind_output("7\t0\n"), Some((7, 0)));
+    }
+
+    #[test]
+    fn parse_git_ahead_behind_output_maps_second_field_to_behind() {
+        assert_eq!(parse_git_ahead_behind_output("0 3\n"), Some((0, 3)));
     }
 }

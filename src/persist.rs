@@ -198,6 +198,7 @@ fn restore_workspace(
         custom_name: snap.custom_name.clone(),
         root_pane,
         layout,
+        cached_git_ahead_behind: None,
         public_pane_numbers,
         next_public_pane_number: panes.len() + 1,
         panes,
