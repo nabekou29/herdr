@@ -5,7 +5,7 @@ use ratatui::layout::Direction;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::detect::{self, Agent, AgentState};
+use crate::detect::{Agent, AgentState};
 use crate::events::AppEvent;
 use crate::layout::{PaneId, TileLayout};
 use crate::pane::{PaneRuntime, PaneState};
@@ -160,44 +160,18 @@ impl Workspace {
         self.runtimes.get(&self.root_pane).and_then(|rt| rt.cwd())
     }
 
-    /// Agent name summary (e.g. "claude, amp"). Used by collapsed sidebar.
-    pub fn agent_summary(&self) -> Option<String> {
-        let mut names = Vec::new();
-
-        for id in self.layout.pane_ids() {
-            if let Some(agent) = self.panes.get(&id).and_then(|p| p.detected_agent) {
-                let name = agent_name(agent);
-                if !names.iter().any(|n| *n == name) {
-                    names.push(name);
-                }
-            }
-        }
-
-        if names.is_empty() {
-            if self.root_cwd().is_some() {
-                Some("shell".to_string())
-            } else {
-                None
-            }
-        } else if names.len() == 1 {
-            Some(names[0].to_string())
-        } else if names.len() == 2 {
-            Some(format!("{}, {}", names[0], names[1]))
-        } else {
-            Some(format!("{}, {} +{}", names[0], names[1], names.len() - 2))
-        }
-    }
-
-    /// Aggregate state + seen across all panes.
-    /// Returns the highest-priority state and the worst-case seen flag.
+    /// Aggregate workspace signal for sidebar triage.
+    /// Returns the most urgent pane's state + seen flag.
     pub fn aggregate_state(&self) -> (AgentState, bool) {
-        let states: Vec<AgentState> = self.panes.values().map(|p| p.state).collect();
-        let state = detect::workspace_state(&states);
-        let seen = self.panes.values().all(|p| p.seen);
-        (state, seen)
+        self.panes
+            .values()
+            .map(|pane| (pane.state, pane.seen))
+            .max_by_key(|(state, seen)| pane_attention_priority(*state, *seen))
+            .unwrap_or((AgentState::Unknown, true))
     }
 
     /// Per-pane (state, seen) in BSP tree order (left-to-right, top-to-bottom).
+    #[cfg(test)]
     pub fn pane_states(&self) -> Vec<(AgentState, bool)> {
         self.layout
             .pane_ids()
@@ -211,10 +185,9 @@ impl Workspace {
             .collect()
     }
 
-    /// Per-pane detail for the agent detail panel, ordered by urgency.
+    /// Per-pane detail for the agent detail panel, in stable layout order.
     pub fn pane_details(&self) -> Vec<PaneDetail> {
-        let mut details: Vec<PaneDetail> = self
-            .layout
+        self.layout
             .pane_ids()
             .iter()
             .map(|id| {
@@ -232,10 +205,7 @@ impl Workspace {
                     seen,
                 }
             })
-            .collect();
-        // Sort by urgency: blocked > working > idle(unseen) > idle > unknown
-        details.sort_by(|a, b| b.urgency().cmp(&a.urgency()));
-        details
+            .collect()
     }
 
     /// Get the git branch for this workspace's root cwd.
@@ -264,16 +234,13 @@ pub struct PaneDetail {
     pub seen: bool,
 }
 
-impl PaneDetail {
-    /// Urgency score for sort ordering (higher = more urgent, shown first).
-    fn urgency(&self) -> u8 {
-        match (self.state, self.seen) {
-            (AgentState::Blocked, _) => 4,
-            (AgentState::Working, _) => 3,
-            (AgentState::Idle, false) => 2, // unseen/done
-            (AgentState::Idle, true) => 1,
-            (AgentState::Unknown, _) => 0,
-        }
+fn pane_attention_priority(state: AgentState, seen: bool) -> u8 {
+    match (state, seen) {
+        (AgentState::Blocked, _) => 4,
+        (AgentState::Idle, false) => 3, // done, waiting for you to look
+        (AgentState::Working, _) => 2,
+        (AgentState::Idle, true) => 1,
+        (AgentState::Unknown, _) => 0,
     }
 }
 
@@ -430,19 +397,41 @@ mod tests {
         ws.panes.get_mut(&root_id).unwrap().state = AgentState::Idle;
         ws.panes.get_mut(&id2).unwrap().state = AgentState::Working;
 
-        let (state, _) = ws.aggregate_state();
+        let (state, seen) = ws.aggregate_state();
         assert_eq!(state, AgentState::Working);
+        assert!(seen);
     }
 
     #[test]
-    fn aggregate_seen_any_unseen_means_unseen() {
+    fn aggregate_state_done_unseen_beats_working() {
         let mut ws = Workspace::test_new("test");
         let id2 = ws.test_split(Direction::Horizontal);
 
-        ws.panes.get_mut(&id2).unwrap().seen = false;
+        let root_id = *ws.panes.keys().find(|id| **id != id2).unwrap();
+        let root = ws.panes.get_mut(&root_id).unwrap();
+        root.state = AgentState::Idle;
+        root.seen = false;
+        ws.panes.get_mut(&id2).unwrap().state = AgentState::Working;
 
-        let (_, seen) = ws.aggregate_state();
+        let (state, seen) = ws.aggregate_state();
+        assert_eq!(state, AgentState::Idle);
         assert!(!seen);
+    }
+
+    #[test]
+    fn aggregate_state_blocked_beats_done_unseen() {
+        let mut ws = Workspace::test_new("test");
+        let id2 = ws.test_split(Direction::Horizontal);
+
+        let root_id = *ws.panes.keys().find(|id| **id != id2).unwrap();
+        let root = ws.panes.get_mut(&root_id).unwrap();
+        root.state = AgentState::Idle;
+        root.seen = false;
+        ws.panes.get_mut(&id2).unwrap().state = AgentState::Blocked;
+
+        let (state, seen) = ws.aggregate_state();
+        assert_eq!(state, AgentState::Blocked);
+        assert!(seen);
     }
 
     #[test]
@@ -475,8 +464,27 @@ mod tests {
 
         let states = ws.pane_states();
         assert_eq!(states.len(), 2);
-        assert!(states.iter().any(|(s, _)| *s == AgentState::Blocked));
-        assert!(states.iter().any(|(s, _)| *s == AgentState::Unknown));
+        assert_eq!(states[0].0, AgentState::Unknown);
+        assert_eq!(states[1].0, AgentState::Blocked);
+    }
+
+    #[test]
+    fn pane_details_stay_in_layout_order() {
+        let mut ws = Workspace::test_new("test");
+        let id2 = ws.test_split(Direction::Horizontal);
+
+        let root_id = *ws.panes.keys().find(|id| **id != id2).unwrap();
+        ws.panes.get_mut(&root_id).unwrap().detected_agent = Some(Agent::Pi);
+        ws.panes.get_mut(&root_id).unwrap().state = AgentState::Working;
+        ws.panes.get_mut(&id2).unwrap().detected_agent = Some(Agent::Claude);
+        ws.panes.get_mut(&id2).unwrap().state = AgentState::Blocked;
+
+        let details = ws.pane_details();
+        assert_eq!(details.len(), 2);
+        assert_eq!(details[0].label, "pi");
+        assert_eq!(details[0].state, AgentState::Working);
+        assert_eq!(details[1].label, "claude");
+        assert_eq!(details[1].state, AgentState::Blocked);
     }
 
     #[test]

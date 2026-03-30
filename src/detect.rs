@@ -16,19 +16,6 @@ pub enum AgentState {
     Unknown,
 }
 
-impl AgentState {
-    /// Priority for rolling up pane states to a workspace indicator.
-    /// Higher = more urgent.
-    pub fn priority(self) -> u8 {
-        match self {
-            Self::Unknown => 0,
-            Self::Idle => 1,
-            Self::Working => 2,
-            Self::Blocked => 3,
-        }
-    }
-}
-
 /// Which agent we detected running in a pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agent {
@@ -104,16 +91,6 @@ pub fn detect_state(agent: Option<Agent>, screen_content: &str) -> AgentState {
         Agent::Droid => detect_droid(screen_content),
         Agent::Amp => detect_amp(screen_content),
     }
-}
-
-/// Roll up multiple pane states into a single workspace state.
-/// Returns the highest-priority state among all panes.
-pub fn workspace_state(pane_states: &[AgentState]) -> AgentState {
-    pane_states
-        .iter()
-        .max_by_key(|s| s.priority())
-        .copied()
-        .unwrap_or(AgentState::Unknown)
 }
 
 // ---------------------------------------------------------------------------
@@ -621,23 +598,6 @@ mod tests {
     }
 
     // ---- Workspace state rollup ----
-
-    #[test]
-    fn workspace_state_blocked_wins() {
-        let states = [AgentState::Idle, AgentState::Working, AgentState::Blocked];
-        assert_eq!(workspace_state(&states), AgentState::Blocked);
-    }
-
-    #[test]
-    fn workspace_state_working_over_idle() {
-        let states = [AgentState::Idle, AgentState::Working, AgentState::Unknown];
-        assert_eq!(workspace_state(&states), AgentState::Working);
-    }
-
-    #[test]
-    fn workspace_state_empty() {
-        assert_eq!(workspace_state(&[]), AgentState::Unknown);
-    }
 
     // ---- No agent → Unknown ----
 

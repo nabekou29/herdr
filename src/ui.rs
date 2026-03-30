@@ -176,13 +176,8 @@ fn compute_sidebar_width(app: &AppState) -> u16 {
         .map(|(i, ws)| {
             let name_len = ws.display_name().len();
             let number_len = (i + 1).to_string().len();
-            let pane_dots = if ws.layout.pane_count() > 1 {
-                ws.layout.pane_count()
-            } else {
-                1
-            };
-            // marker + number + space + name + spaces + dots
-            let line1 = 3 + number_len + name_len + 2 + pane_dots;
+            // marker + number + space + name + spaces + aggregate dot
+            let line1 = 3 + number_len + name_len + 3;
             // branch line: "  branch"
             let line2 = ws.branch().map(|b| 3 + b.len()).unwrap_or(0);
             line1.max(line2)
@@ -381,7 +376,7 @@ fn render_workspace_list(app: &AppState, frame: &mut Frame, area: Rect, is_navig
             Style::default().fg(p.overlay0)
         };
 
-        // Line 1: marker-space + number + name + state dots
+        // Line 1: marker-space + number + name + aggregate state dot
         let marker = if is_active { " " } else { " " }; // accent bar handles active indicator
         let mut line1 = vec![
             Span::styled(marker, Style::default()),
@@ -390,16 +385,8 @@ fn render_workspace_list(app: &AppState, frame: &mut Frame, area: Rect, is_navig
             Span::styled(" ", Style::default()),
         ];
 
-        // State dots (one per pane, or single aggregate)
-        if ws.layout.pane_count() == 1 {
-            let (icon, icon_style) = state_dot(agg_state, agg_seen, p);
-            line1.push(Span::styled(icon, icon_style));
-        } else {
-            for (pane_state, pane_seen) in ws.pane_states() {
-                let (icon, icon_style) = state_dot(pane_state, pane_seen, p);
-                line1.push(Span::styled(icon, icon_style));
-            }
-        }
+        let (icon, icon_style) = state_dot(agg_state, agg_seen, p);
+        line1.push(Span::styled(icon, icon_style));
 
         frame.render_widget(
             Paragraph::new(Line::from(line1)),
@@ -1652,6 +1639,7 @@ fn render_toast_notification(
 ///
 /// | State              | Icon | Color  |
 /// |--------------------|------|--------|
+/// | Blocked            | ●    | Red    |
 /// | Working            | ●    | Yellow |
 /// | Done (idle+unseen) | ●    | Blue   |
 /// | Idle (seen)        | ○    | Green  |

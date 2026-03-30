@@ -278,7 +278,10 @@ fn kitty_shift_letter_release_does_not_emit_text() {
 fn kitty_shifted_symbol_sends_text() {
     let key = TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT)
         .with_shifted_codepoint('!' as u32);
-    assert_eq!(encode_terminal_key(key, KeyboardProtocol::Kitty { flags: 7 }), b"!");
+    assert_eq!(
+        encode_terminal_key(key, KeyboardProtocol::Kitty { flags: 7 }),
+        b"!"
+    );
 }
 
 #[test]
