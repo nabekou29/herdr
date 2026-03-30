@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.2.0] - 2026-03-30
+
 ### Added
 - Added a local Unix socket API for controlling running herdr sessions, including workspace and pane management, pane reads, text/key input, pane splitting, and output waits.
 - Added event subscriptions over the socket API for workspace and pane lifecycle events, pane output matches, and agent state changes.
