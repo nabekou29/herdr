@@ -214,6 +214,8 @@ fn blit_frame_to(mut writer: impl Write, frame: &FrameData, prev: Option<&FrameD
     // Position the cursor and set visibility.
     if let Some(cursor) = &frame.cursor {
         if cursor.visible {
+            // Emit DECSCUSR to update the cursor shape (bar, block, underline).
+            let _ = write!(writer, "\x1b[{} q", cursor.shape);
             // Show cursor (restore visibility if it was hidden on a previous frame).
             let _ = writer.write_all(b"\x1b[?25h");
             // CUP: move cursor to (row+1, col+1) — 1-based.
@@ -575,6 +577,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
+                shape: 2,
             }),
         };
 
@@ -598,6 +601,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: false,
+                shape: 2,
             }),
         };
 
@@ -641,6 +645,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: false,
+                shape: 2,
             }),
         };
 
@@ -660,6 +665,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
+                shape: 2,
             }),
         };
 
@@ -686,6 +692,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
+                shape: 2,
             }),
         };
         let curr = FrameData {

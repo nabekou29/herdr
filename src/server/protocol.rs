@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -85,6 +85,8 @@ pub struct CursorState {
     pub y: u16,
     /// Whether the cursor is visible.
     pub visible: bool,
+    /// DECSCUSR parameter for cursor shape (2=block, 4=underline, 6=bar).
+    pub shape: u8,
 }
 
 /// A rendered frame to be displayed by the client.
@@ -595,6 +597,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
+                shape: 2,
             }),
         };
         let msg = ServerMessage::Frame(frame.clone());
@@ -682,6 +685,7 @@ mod tests {
                 x: 10,
                 y: 5,
                 visible: true,
+                shape: 2,
             }),
         };
         let msg = ServerMessage::Frame(frame);
@@ -820,17 +824,15 @@ mod tests {
 
     #[test]
     fn version_compatible() {
-        assert_eq!(check_client_version(1), VersionCheck::Compatible);
+        assert_eq!(check_client_version(PROTOCOL_VERSION), VersionCheck::Compatible);
     }
 
     #[test]
     fn version_older_client_rejected() {
-        match check_client_version(1) {
+        match check_client_version(PROTOCOL_VERSION) {
             VersionCheck::Compatible => {} // current version
             _ => panic!("current version should be compatible"),
         }
-        // If we imagine a future server version 2, a v1 client would be rejected.
-        // We test this by checking the logic directly.
         let result = check_client_version(0);
         assert!(
             matches!(result, VersionCheck::Incompatible(_)),
@@ -952,6 +954,7 @@ mod tests {
             x: 1,
             y: 0,
             visible: true,
+            shape: 2,
         };
         let frame = FrameData::from_ratatui_buffer(&buffer, Some(cursor.clone()));
 

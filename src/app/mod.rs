@@ -430,6 +430,11 @@ impl App {
                     crate::ui::compute_view(&mut self.state, frame.area());
                     crate::ui::render(&self.state, frame);
                 })?;
+                if let Some(shape) = self.focused_cursor_shape() {
+                    use io::Write as _;
+                    let _ = write!(io::stdout(), "\x1b[{} q", shape.decscusr_param());
+                    let _ = io::stdout().flush();
+                }
                 self.last_render_at = Some(now);
                 needs_render = false;
                 continue;
@@ -529,6 +534,14 @@ impl App {
     pub(crate) fn open_settings_from_onboarding(&mut self) {
         self.mark_onboarding_complete();
         crate::app::input::open_settings(&mut self.state);
+    }
+
+    fn focused_cursor_shape(&self) -> Option<crate::ghostty::CursorShape> {
+        self.state
+            .active
+            .and_then(|i| self.state.workspaces.get(i))
+            .and_then(|ws| ws.focused_runtime())
+            .and_then(|rt| rt.cursor_shape())
     }
 
     pub(crate) fn reload_keybinds(&mut self) {

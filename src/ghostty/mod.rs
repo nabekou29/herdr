@@ -147,6 +147,27 @@ pub struct CursorViewport {
     pub wide_tail: bool,
 }
 
+/// Cursor visual shape as reported by the terminal emulator via DECSCUSR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CursorShape {
+    #[default]
+    Block,
+    Bar,
+    Underline,
+    BlockHollow,
+}
+
+impl CursorShape {
+    /// Returns the DECSCUSR parameter for a steady (non-blinking) variant of this shape.
+    pub fn decscusr_param(self) -> u8 {
+        match self {
+            Self::Block | Self::BlockHollow => 2,
+            Self::Underline => 4,
+            Self::Bar => 6,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RgbColor {
     pub r: u8,
@@ -638,6 +659,27 @@ impl RenderState {
 
     pub fn cursor_visible(&self) -> Result<bool, Error> {
         self.get_bool(ffi::GhosttyRenderStateData_GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE)
+    }
+
+    pub fn cursor_visual_style(&self) -> Result<CursorShape, Error> {
+        let mut out =
+            ffi::GhosttyRenderStateCursorVisualStyle_GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK;
+        unsafe {
+            ffi::ghostty_render_state_get(
+                self.raw,
+                ffi::GhosttyRenderStateData_GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE,
+                (&mut out as *mut ffi::GhosttyRenderStateCursorVisualStyle).cast(),
+            )
+            .into_result()?;
+        }
+        Ok(
+            match out {
+                ffi::GhosttyRenderStateCursorVisualStyle_GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR => CursorShape::Bar,
+                ffi::GhosttyRenderStateCursorVisualStyle_GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE => CursorShape::Underline,
+                ffi::GhosttyRenderStateCursorVisualStyle_GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW => CursorShape::BlockHollow,
+                _ => CursorShape::Block,
+            },
+        )
     }
 
     pub fn cursor_viewport(&self) -> Result<Option<CursorViewport>, Error> {
@@ -1228,6 +1270,52 @@ mod tests {
         let output = responses.lock().unwrap().clone();
         assert!(!output.is_empty());
         assert!(String::from_utf8_lossy(&output).contains("R"));
+    }
+
+    #[test]
+    fn kitty_keyboard_query_receives_response() {
+        let mut terminal = Terminal::new(80, 24, 0).unwrap();
+        let responses = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let sink = responses.clone();
+        terminal
+            .set_write_pty_callback(move |bytes| sink.lock().unwrap().extend_from_slice(bytes))
+            .unwrap();
+
+        // Kitty keyboard detection query — terminal should respond with current flags
+        terminal.write(b"\x1b[?u");
+
+        let output = responses.lock().unwrap().clone();
+        let output_str = String::from_utf8_lossy(&output);
+        println!("Kitty keyboard query response (raw): {:?}", output);
+        println!("Kitty keyboard query response (str): {output_str:?}");
+        // Should respond with \x1b[?{flags}u (flags=0 if none pushed yet)
+        assert!(
+            !output.is_empty(),
+            "Ghostty should respond to Kitty keyboard query; got empty output"
+        );
+        assert!(
+            output_str.contains("?0u") || output_str.contains("u"),
+            "Expected Kitty keyboard response, got: {output_str:?}"
+        );
+    }
+
+    #[test]
+    fn xtgettcap_kitty_keyboard_receives_response() {
+        let mut terminal = Terminal::new(80, 24, 0).unwrap();
+        let responses = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let sink = responses.clone();
+        terminal
+            .set_write_pty_callback(move |bytes| sink.lock().unwrap().extend_from_slice(bytes))
+            .unwrap();
+
+        // XTGETTCAP query for 'kitty-keyboard'
+        // "kitty-keyboard" in hex: 6b697474792d6b6579626f617264
+        terminal.write(b"\x1bP+q6b697474792d6b6579626f617264\x1b\\");
+
+        let output = responses.lock().unwrap().clone();
+        let output_str = String::from_utf8_lossy(&output);
+        println!("XTGETTCAP kitty-keyboard response (raw): {:?}", output);
+        println!("XTGETTCAP kitty-keyboard response (str): {output_str:?}");
     }
 
     #[test]

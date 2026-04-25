@@ -219,11 +219,12 @@ impl CursorTrackingBackend {
         self.inner.buffer()
     }
 
-    fn rendered_cursor(&self) -> Option<CursorState> {
+    fn rendered_cursor(&self, shape: u8) -> Option<CursorState> {
         self.rendered_cursor.map(|pos| CursorState {
             x: pos.x,
             y: pos.y,
             visible: true,
+            shape,
         })
     }
 }
@@ -310,7 +311,14 @@ fn render_virtual(
         .expect("render to TestBackend should never fail");
 
     let buffer = terminal.backend().buffer().clone();
-    let cursor = terminal.backend().rendered_cursor();
+    let cursor_shape: u8 = app_state
+        .active
+        .and_then(|i| app_state.workspaces.get(i))
+        .and_then(|ws| ws.focused_runtime())
+        .and_then(|rt| rt.cursor_shape())
+        .map(|s| s.decscusr_param())
+        .unwrap_or(2);
+    let cursor = terminal.backend().rendered_cursor(cursor_shape);
 
     (buffer, cursor)
 }
@@ -2255,6 +2263,7 @@ mod tests {
                 x: pane.inner_rect.x + 4,
                 y: pane.inner_rect.y,
                 visible: true,
+                shape: 2,
             })
         );
     }

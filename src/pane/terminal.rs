@@ -141,6 +141,10 @@ impl PaneTerminal {
         self.ghostty.render(frame, area, show_cursor);
     }
 
+    pub fn cursor_shape(&self) -> Option<crate::ghostty::CursorShape> {
+        self.ghostty.cursor_shape()
+    }
+
     pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
         self.ghostty.apply_host_terminal_theme(theme);
     }
@@ -536,6 +540,16 @@ impl GhosttyPaneTerminal {
             .lock()
             .ok()
             .and_then(|mut core| ghostty_extract_selection(&mut core, selection).ok())
+    }
+
+    pub fn cursor_shape(&self) -> Option<crate::ghostty::CursorShape> {
+        let Ok(core) = self.core.lock() else {
+            return None;
+        };
+        if core.render_state.cursor_visible().ok() != Some(true) {
+            return None;
+        }
+        core.render_state.cursor_visual_style().ok()
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) {

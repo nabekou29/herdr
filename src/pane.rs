@@ -704,6 +704,10 @@ impl PaneRuntime {
         self.terminal.render(frame, area, show_cursor);
     }
 
+    pub fn cursor_shape(&self) -> Option<crate::ghostty::CursorShape> {
+        self.terminal.cursor_shape()
+    }
+
     pub fn keyboard_protocol(&self) -> crate::input::KeyboardProtocol {
         let fallback = crate::input::KeyboardProtocol::from_kitty_flags(
             self.kitty_keyboard_flags.load(Ordering::Relaxed),
@@ -712,8 +716,14 @@ impl PaneRuntime {
     }
 
     pub fn encode_terminal_key(&self, key: crate::input::TerminalKey) -> Vec<u8> {
-        self.terminal
-            .encode_terminal_key(key, self.keyboard_protocol())
+        let protocol = self.keyboard_protocol();
+        tracing::debug!(
+            key_code = ?key.code,
+            modifiers = ?key.modifiers,
+            ?protocol,
+            "encoding key for pane"
+        );
+        self.terminal.encode_terminal_key(key, protocol)
     }
 
     pub async fn send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::SendError<Bytes>> {
